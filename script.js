@@ -1,5 +1,11 @@
 const contenedor = document.getElementById("numeros");
 
+// Slug de la organización a mostrar (definido en tenant.js, cargado antes que este archivo)
+const RIFA_SLUG = window.RIFA_SLUG;
+
+// Última configuración pública conocida (se actualiza cada vez que se consulta)
+let configActual = null;
+
 // =============================
 // NORMALIZAR ESTADOS
 // =============================
@@ -12,35 +18,37 @@ function normalizarEstado(estado) {
 }
 
 // =============================
-// BLOQUEO — fuente de verdad
-// Siempre consulta Supabase y devuelve true/false
+// CONFIGURACIÓN PÚBLICA (reemplaza los SELECT directos a config_rifa)
+// Siempre consulta Supabase y devuelve el dato más fresco.
 // =============================
-async function cargarBloqueo() {
+async function obtenerConfigPublica() {
   try {
-    const { data, error } = await supabaseClient
-      .from("config_rifa")
-      .select("bloqueado")
-      .eq("id", 1)
-      .single();
-
-    console.log("[bloqueo] data:", data, "| error:", error);
+    const { data, error } = await supabaseClient.rpc("get_rifa_publica", { p_slug: RIFA_SLUG });
 
     if (error) {
-      console.warn("[bloqueo] Error al leer config_rifa:", error.message);
-      return false;
+      console.warn("[config] Error al leer la rifa:", error.message);
+      return null;
     }
     if (!data) {
-      console.warn("[bloqueo] No se encontró la fila id=1 en config_rifa");
-      return false;
+      console.warn("[config] No se encontró ninguna rifa con el slug:", RIFA_SLUG);
+      return null;
     }
 
-    console.log("[bloqueo] valor:", data.bloqueado, "| tipo:", typeof data.bloqueado);
-    return data.bloqueado === true;
+    configActual = data;
+    return data;
 
   } catch (err) {
-    console.error("[bloqueo] Error inesperado:", err);
-    return false;
+    console.error("[config] Error inesperado:", err);
+    return null;
   }
+}
+
+// =============================
+// BLOQUEO — fuente de verdad
+// =============================
+async function cargarBloqueo() {
+  const config = await obtenerConfigPublica();
+  return config?.bloqueado === true;
 }
 
 // =============================
@@ -49,10 +57,7 @@ async function cargarBloqueo() {
 async function cargarNumeros() {
   const bloqueado = await cargarBloqueo();
 
-  const { data, error } = await supabaseClient
-    .from("numeros_rifa")
-    .select("*")
-    .order("numero", { ascending: true });
+  const { data, error } = await supabaseClient.rpc("get_numeros_publicos", { p_slug: RIFA_SLUG });
 
   if (error) {
     console.error("Error al cargar números:", error);
@@ -64,7 +69,7 @@ async function cargarNumeros() {
 
   contenedor.innerHTML = "";
 
-  data.forEach(numero => {
+  (data || []).forEach(numero => {
     const boton = document.createElement("button");
     boton.textContent = numero.numero.toString().padStart(2, "0");
 
@@ -104,23 +109,20 @@ async function comprarNumero(numero) {
   const telefono = prompt("Ingrese su número de teléfono (10 dígitos):");
   if (telefono === null) return;
 
-  // Validar: exactamente 10 dígitos numéricos
+  // Validar: exactamente 10 dígitos numéricos (misma regla de siempre;
+  // el servidor la vuelve a validar como segunda línea de defensa)
   const soloNumeros = telefono.trim().replace(/\s/g, "");
   if (!/^\d{10}$/.test(soloNumeros)) {
     alert("Ingrese un número de teléfono válido (exactamente 10 dígitos numéricos).");
     return;
   }
 
-  const { data, error } = await supabaseClient
-    .from("numeros_rifa")
-    .update({
-      nombre:   nombre.trim(),
-      telefono: soloNumeros,
-      estado:   "pendiente"
-    })
-    .eq("numero", numero)
-    .eq("estado", "libre")
-    .select();
+  const { data, error } = await supabaseClient.rpc("reservar_numero", {
+    p_slug:     RIFA_SLUG,
+    p_numero:   numero,
+    p_nombre:   nombre.trim(),
+    p_telefono: soloNumeros
+  });
 
   if (error) {
     console.error("ERROR SUPABASE:", error);
@@ -128,8 +130,17 @@ async function comprarNumero(numero) {
     return;
   }
 
-  if (!data || data.length === 0) {
-    alert("Ese número ya fue reservado por otra persona.");
+  if (!data || data.ok !== true) {
+    const err = data?.error;
+    if (err === "bloqueado") {
+      alert("La selección de números está temporalmente deshabilitada.");
+    } else if (err === "telefono_invalido" || err === "nombre_invalido") {
+      alert("Los datos ingresados no son válidos. Intentá de nuevo.");
+    } else if (err === "rifa_no_encontrada") {
+      alert("No se pudo encontrar esta rifa.");
+    } else {
+      alert("Ese número ya fue reservado por otra persona.");
+    }
     cargarNumeros();
     return;
   }
@@ -142,23 +153,8 @@ async function comprarNumero(numero) {
 // CARGAR INFO DEL MODAL
 // =============================
 async function cargarInfoRifa() {
-  const { data, error } = await supabaseClient
-    .from("config_rifa")
-    .select("*")
-    .order("id", { ascending: true })
-    .limit(1);
-
-  if (error) {
-    console.error("Error al cargar info de la rifa:", error);
-    return;
-  }
-
-  if (!data || data.length === 0) {
-    console.warn("No hay configuración guardada en config_rifa");
-    return;
-  }
-
-  const config = data[0];
+  const config = await obtenerConfigPublica();
+  if (!config) return;
 
   const tituloInfo       = document.getElementById("tituloInfo");
   const subtituloInfo    = document.getElementById("subtituloInfo");
@@ -174,7 +170,7 @@ async function cargarInfoRifa() {
   if (infoMensajeExtra) infoMensajeExtra.textContent = config.mensaje_extra   || "-";
 
   if (btnWhatsapp) {
-    if (config.whatsapp && config.whatsapp.trim() !== "") {
+    if (config.whatsapp && String(config.whatsapp).trim() !== "") {
       btnWhatsapp.href          = `https://wa.me/${config.whatsapp}?text=Hola%20quiero%20consultar%20por%20la%20rifa`;
       btnWhatsapp.style.display = "flex";
     } else {
@@ -189,18 +185,9 @@ async function cargarInfoRifa() {
 // =============================
 async function cargarBanner() {
   try {
-    const { data, error } = await supabaseClient
-      .from("config_rifa")
-      .select("imagen_url")
-      .eq("id", 1)
-      .single();
+    const config = configActual || await obtenerConfigPublica();
 
-    if (error) {
-      console.warn("cargarBanner: error al leer config_rifa →", error.message);
-      return;
-    }
-
-    if (!data?.imagen_url) {
+    if (!config?.imagen_url) {
       console.info("cargarBanner: no hay imagen_url guardada.");
       return;
     }
@@ -210,7 +197,7 @@ async function cargarBanner() {
 
     if (!banner || !bannerImg) return;
 
-    bannerImg.src        = data.imagen_url + "?t=" + Date.now();
+    bannerImg.src        = config.imagen_url + "?t=" + Date.now();
     banner.style.display = "flex";
     document.body.classList.add("banner-abierto");
 
@@ -270,29 +257,41 @@ window.addEventListener("keydown", function (e) {
 });
 
 // =============================
-// TIEMPO REAL: NUMEROS_RIFA
+// TIEMPO REAL (Realtime Broadcast, por organización)
+// Reemplaza los dos canales postgres_changes: ahora la base emite un
+// mensaje por cada cambio, sin exponer nombre ni teléfono, y solo a
+// quien esté mirando esta organización.
 // =============================
-supabaseClient
-  .channel("numeros_rifa_changes")
-  .on("postgres_changes", { event: "*", schema: "public", table: "numeros_rifa" }, () => {
-    cargarNumeros();
-  })
-  .subscribe();
+function suscribirseRealtime(organizationId) {
+  if (!organizationId) return;
 
-// =============================
-// TIEMPO REAL: CONFIG_RIFA
-// =============================
-supabaseClient
-  .channel("config_rifa_changes")
-  .on("postgres_changes", { event: "*", schema: "public", table: "config_rifa" }, () => {
-    cargarInfoRifa();
-    cargarNumeros(); // re-renderiza con el estado de bloqueo actualizado
-  })
-  .subscribe();
+  supabaseClient
+    .channel(`rifa:${organizationId}`)
+    .on("broadcast", { event: "numeros" }, () => {
+      cargarNumeros();
+    })
+    .on("broadcast", { event: "config" }, () => {
+      cargarInfoRifa();
+      cargarNumeros(); // re-renderiza con el estado de bloqueo actualizado
+    })
+    .subscribe();
+}
 
 // =============================
 // INICIO
 // =============================
-cargarNumeros();
-cargarInfoRifa();
-cargarBanner();
+(async function iniciar() {
+  const config = await obtenerConfigPublica();
+
+  if (!config) {
+    if (contenedor) {
+      contenedor.innerHTML = "<p style='padding:20px;'>No se encontró esta rifa.</p>";
+    }
+    return;
+  }
+
+  await cargarNumeros();
+  await cargarInfoRifa();
+  await cargarBanner();
+  suscribirseRealtime(config.organization_id);
+})();
