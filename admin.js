@@ -528,7 +528,7 @@ async function subirImagen() {
   try {
     // 1. Usar extensión real del archivo para evitar problemas de tipo
     const ext        = archivoSeleccionado.name.split(".").pop().toLowerCase() || "jpg";
-    const storagePath = "presentacion/banner." + ext;
+    const storagePath = orgActual.id + "/presentacion/banner." + ext;
 
     // 2. Subir al bucket (upsert = sobreescribe si ya existe)
     const { error: uploadError } = await supabaseClient.storage
