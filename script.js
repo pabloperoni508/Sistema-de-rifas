@@ -102,18 +102,18 @@ async function comprarNumero(numero) {
   }
 
   // Pedir nombre
-  const nombre = prompt("Ingrese su nombre:");
+  const nombre = prompt("Ingrese su nombre y apellido:");
   if (!nombre || !nombre.trim()) return;
 
   // Pedir teléfono
-  const telefono = prompt("Ingrese su número de teléfono (10 dígitos):");
+  const telefono = prompt("Ingrese su número de teléfono:");
   if (telefono === null) return;
 
   // Validar: exactamente 10 dígitos numéricos (misma regla de siempre;
   // el servidor la vuelve a validar como segunda línea de defensa)
   const soloNumeros = telefono.trim().replace(/\s/g, "");
   if (!/^\d{10}$/.test(soloNumeros)) {
-    alert("Ingrese un número de teléfono válido (exactamente 10 dígitos numéricos).");
+    alert("Ingrese un número de teléfono válido (son exactamente 10 dígitos numéricos).");
     return;
   }
 
