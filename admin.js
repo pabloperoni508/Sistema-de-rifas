@@ -1,21 +1,30 @@
 // =========================
-// LOGIN
+// LOGIN (Supabase Auth)
 // =========================
-const SESSION_KEY = "rifa_admin_ok";
 
-async function verificarPassword(intento) {
-  const { data, error } = await supabaseClient
-    .from("config_rifa")
-    .select("password_admin")
-    .eq("id", 1)
+// Organización del usuario logueado. Se completa al iniciar sesión.
+let orgActual = null;
+
+// Busca la organización del usuario autenticado (hoy cada usuario
+// pertenece a una sola organización; si en el futuro pertenece a
+// varias, se toma la primera).
+async function obtenerOrganizacionActual() {
+  const { data: membresia, error: errorMembresia } = await supabaseClient
+    .from("organization_members")
+    .select("organization_id")
+    .limit(1)
     .single();
 
-  if (error || !data?.password_admin) return false;
-  return intento === data.password_admin;
-}
+  if (errorMembresia || !membresia?.organization_id) return null;
 
-function estaAutenticado() {
-  return sessionStorage.getItem(SESSION_KEY) === "1";
+  const { data: organizacion, error: errorOrg } = await supabaseClient
+    .from("organizations")
+    .select("id, slug, name")
+    .eq("id", membresia.organization_id)
+    .single();
+
+  if (errorOrg || !organizacion) return null;
+  return organizacion;
 }
 
 function mostrarPanel() {
@@ -29,27 +38,45 @@ function mostrarLogin() {
 }
 
 async function intentarLogin() {
+  const email = document.getElementById("inputEmail").value.trim();
   const pass  = document.getElementById("inputPassword").value;
   const error = document.getElementById("loginError");
   const btn   = document.getElementById("btnLogin");
 
-  if (!pass.trim()) return;
+  if (!email || !pass.trim()) return;
 
   btn.disabled     = true;
   btn.textContent  = "Verificando...";
   error.style.display = "none";
 
-  const ok = await verificarPassword(pass.trim());
+  const { error: authError } = await supabaseClient.auth.signInWithPassword({
+    email,
+    password: pass
+  });
 
-  if (ok) {
-    sessionStorage.setItem(SESSION_KEY, "1");
-    mostrarPanel();
-    iniciarAdmin();
-  } else {
+  if (authError) {
+    error.textContent   = "Email o contraseña incorrectos.";
     error.style.display = "block";
     btn.disabled    = false;
     btn.textContent = "Ingresar";
+    return;
   }
+
+  orgActual = await obtenerOrganizacionActual();
+
+  if (!orgActual) {
+    error.textContent   = "Tu usuario no está vinculado a ninguna organización todavía.";
+    error.style.display = "block";
+    await supabaseClient.auth.signOut();
+    btn.disabled    = false;
+    btn.textContent = "Ingresar";
+    return;
+  }
+
+  mostrarPanel();
+  await iniciarAdmin();
+  btn.disabled    = false;
+  btn.textContent = "Ingresar";
 }
 
 // Enter en el input de password dispara login
@@ -66,19 +93,32 @@ document.getElementById("btnVerPass").addEventListener("click", () => {
 });
 
 // Cerrar sesión
-document.getElementById("btnCerrarSesion").addEventListener("click", () => {
-  sessionStorage.removeItem(SESSION_KEY);
+document.getElementById("btnCerrarSesion").addEventListener("click", async () => {
+  await supabaseClient.auth.signOut();
+  orgActual = null;
+  document.getElementById("inputEmail").value    = "";
   document.getElementById("inputPassword").value = "";
   mostrarLogin();
 });
 
-// Al cargar la página: si ya hay sesión activa, ir directo al panel
-if (estaAutenticado()) {
-  mostrarPanel();
-  iniciarAdmin();
-} else {
+// Al cargar la página: si ya hay una sesión de Supabase Auth activa
+// (persistida por el propio cliente), ir directo al panel.
+(async function verificarSesionAlCargar() {
+  const { data: { session } } = await supabaseClient.auth.getSession();
+
+  if (session) {
+    orgActual = await obtenerOrganizacionActual();
+    if (orgActual) {
+      mostrarPanel();
+      await iniciarAdmin();
+      return;
+    }
+    // Sesión válida pero sin organización vinculada: no dejar pasar.
+    await supabaseClient.auth.signOut();
+  }
+
   mostrarLogin();
-}
+})();
 
 // =========================
 // VARIABLES DEL PANEL
@@ -121,7 +161,7 @@ async function cargarConfig() {
     const { data, error } = await supabaseClient
       .from("config_rifa")
       .select("*")
-      .eq("id", 1)
+      .eq("organization_id", orgActual.id)
       .single();
 
     if (error) {
@@ -147,7 +187,7 @@ async function cargarConfig() {
 async function guardarConfig() {
   try {
     const payload = {
-      id: 1,
+      organization_id: orgActual.id,
       titulo_modal: tituloModalInput.value.trim(),
       subtitulo_modal: subtituloModalInput.value.trim(),
       valor_numero: valorNumeroInput.value.trim(),
@@ -158,7 +198,7 @@ async function guardarConfig() {
 
     const { error } = await supabaseClient
       .from("config_rifa")
-      .upsert(payload);
+      .upsert(payload, { onConflict: "organization_id" });
 
     if (error) {
       console.error("Error al guardar configuración:", error);
@@ -174,6 +214,14 @@ async function guardarConfig() {
   }
 }
 
+// Evita que nombre/teléfono se interpreten como HTML en la tabla
+function escapeHtml(texto) {
+  if (!texto) return texto;
+  const div = document.createElement("div");
+  div.textContent = texto;
+  return div.innerHTML;
+}
+
 // =========================
 // CARGAR TABLA ADMIN
 // =========================
@@ -182,6 +230,7 @@ async function cargarTablaAdmin() {
     const { data, error } = await supabaseClient
       .from("numeros_rifa")
       .select("*")
+      .eq("organization_id", orgActual.id)
       .order("numero", { ascending: true });
 
     if (error) {
@@ -211,10 +260,12 @@ async function cargarTablaAdmin() {
         accionesHTML = `<span style="color:#777;">-</span>`;
       }
 
+      // escapeHtml() evita que un nombre o teléfono con caracteres como
+      // < > se interprete como HTML al insertarlo en la tabla.
       fila.innerHTML = `
         <td>${String(item.numero).padStart(2, "0")}</td>
-        <td>${item.nombre || "-"}</td>
-        <td>${item.telefono || "-"}</td>
+        <td>${escapeHtml(item.nombre) || "-"}</td>
+        <td>${escapeHtml(item.telefono) || "-"}</td>
         <td>
           <span class="estado-badge ${estado}">${estado}</span>
         </td>
@@ -239,6 +290,7 @@ async function confirmarNumero(numero) {
     const { error } = await supabaseClient
       .from("numeros_rifa")
       .update({ estado: "confirmado" })
+      .eq("organization_id", orgActual.id)
       .eq("numero", numero);
 
     if (error) {
@@ -268,6 +320,7 @@ async function cancelarNumero(numero) {
         telefono: null,
         estado:   "libre"
       })
+      .eq("organization_id", orgActual.id)
       .eq("numero", numero);
 
     if (error) {
@@ -301,7 +354,7 @@ async function limpiarGrillaEntera() {
         telefono: null,
         estado:   "libre"
       })
-      .neq("numero", -1);
+      .eq("organization_id", orgActual.id);
 
     if (error) {
       console.error("Error al limpiar la grilla:", error);
@@ -337,14 +390,16 @@ window.confirmarNumero = confirmarNumero;
 window.cancelarNumero = cancelarNumero;
 
 // =========================
-// INICIO
+// INICIO DEL PANEL (se llama solo después de un login exitoso,
+// una vez que orgActual ya está disponible)
 // =========================
 async function iniciarAdmin() {
   await cargarConfig();
   await cargarTablaAdmin();
+  await cargarImagenActual();
+  await cargarEstadoBloqueo();
 }
 
-iniciarAdmin();
 // =========================
 // DESCARGAR RIFA (CSV)
 // =========================
@@ -353,6 +408,7 @@ async function descargarRifaCSV() {
     const { data, error } = await supabaseClient
       .from("numeros_rifa")
       .select("*")
+      .eq("organization_id", orgActual.id)
       .order("numero", { ascending: true });
 
     if (error) {
@@ -362,7 +418,7 @@ async function descargarRifaCSV() {
     }
 
     // Encabezado
-const filas = [["Número", "Nombre","N° celular", "Estado"]];
+    const filas = [["Número", "Nombre","N° celular", "Estado"]];
 
     data.forEach(item => {
       filas.push([
@@ -405,7 +461,6 @@ if (btnDescargarRifa) {
 // IMAGEN DE PRESENTACIÓN
 // =========================
 const STORAGE_BUCKET = "rifa-imagenes"; // <-- nombre del bucket en Supabase Storage
-const STORAGE_PATH   = "presentacion/banner.jpg"; // path fijo, siempre sobreescribe
 
 const inputImagen        = document.getElementById("inputImagen");
 const btnSeleccionarImg  = document.getElementById("btnSeleccionarImagen");
@@ -435,7 +490,7 @@ async function cargarImagenActual() {
     const { data, error } = await supabaseClient
       .from("config_rifa")
       .select("imagen_url")
-      .eq("id", 1)
+      .eq("organization_id", orgActual.id)
       .single();
 
     if (error || !data?.imagen_url) return;
@@ -460,6 +515,9 @@ function previsualizarArchivo(file) {
 }
 
 // Subir imagen a Supabase Storage y guardar URL en config_rifa
+// (el path del archivo sigue siendo el mismo de siempre; el aislamiento
+// por organización en Storage se activa junto con el corte de seguridad
+// final, cuando además haya más de una organización subiendo imágenes)
 async function subirImagen() {
   if (!archivoSeleccionado) return;
 
@@ -470,7 +528,7 @@ async function subirImagen() {
   try {
     // 1. Usar extensión real del archivo para evitar problemas de tipo
     const ext        = archivoSeleccionado.name.split(".").pop().toLowerCase() || "jpg";
-    const storagePath = "presentacion/banner." + ext;
+    const storagePath = orgActual.id + "/presentacion/banner." + ext;
 
     // 2. Subir al bucket (upsert = sobreescribe si ya existe)
     const { error: uploadError } = await supabaseClient.storage
@@ -508,7 +566,10 @@ async function subirImagen() {
     // 4. Guardar URL limpia en config_rifa
     const { error: dbError } = await supabaseClient
       .from("config_rifa")
-      .upsert({ id: 1, imagen_url: urlBase });
+      .upsert(
+        { organization_id: orgActual.id, imagen_url: urlBase, imagen_path: storagePath },
+        { onConflict: "organization_id" }
+      );
 
     if (dbError) {
       const msg = "Imagen subida al Storage pero no se pudo guardar la URL en la base de datos: " + dbError.message;
@@ -543,14 +604,20 @@ async function quitarImagen() {
   mostrarStatus("Quitando imagen...", "info");
 
   try {
-    await supabaseClient.storage
-      .from(STORAGE_BUCKET)
-      .remove([STORAGE_PATH]);
+    const { data: fila } = await supabaseClient
+      .from("config_rifa")
+      .select("imagen_path")
+      .eq("organization_id", orgActual.id)
+      .single();
+
+    if (fila?.imagen_path) {
+      await supabaseClient.storage.from(STORAGE_BUCKET).remove([fila.imagen_path]);
+    }
 
     const { error } = await supabaseClient
       .from("config_rifa")
-      .update({ imagen_url: null })
-      .eq("id", 1);
+      .update({ imagen_url: null, imagen_path: null })
+      .eq("organization_id", orgActual.id);
 
     if (error) {
       mostrarStatus("Error al quitar la imagen: " + error.message, "error");
@@ -631,11 +698,8 @@ if (btnQuitarImagen) {
   btnQuitarImagen.addEventListener("click", quitarImagen);
 }
 
-// Cargar imagen actual al iniciar el admin
-cargarImagenActual();
-
 // =========================
-// CAMBIAR CONTRASEÑA
+// CAMBIAR CONTRASEÑA (ahora usa Supabase Auth)
 // =========================
 async function cambiarPassword() {
   const actual    = document.getElementById("passActualInput").value.trim();
@@ -657,19 +721,23 @@ async function cambiarPassword() {
     return;
   }
 
-  // Verificar que la contraseña actual sea correcta
-  const ok = await verificarPassword(actual);
-  if (!ok) {
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  if (!user?.email) {
+    alert("No se pudo verificar tu sesión. Volvé a iniciar sesión e intentá de nuevo.");
+    return;
+  }
+
+  // Verificar la contraseña actual re-autenticando con ella
+  const { error: reauthError } = await supabaseClient.auth.signInWithPassword({
+    email: user.email,
+    password: actual
+  });
+  if (reauthError) {
     alert("La contraseña actual es incorrecta.");
     return;
   }
 
-  // Guardar la nueva contraseña
-  const { error } = await supabaseClient
-    .from("config_rifa")
-    .update({ password_admin: nueva })
-    .eq("id", 1);
-
+  const { error } = await supabaseClient.auth.updateUser({ password: nueva });
   if (error) {
     alert("Error al cambiar la contraseña: " + error.message);
     return;
@@ -693,7 +761,7 @@ async function cargarEstadoBloqueo() {
     const { data, error } = await supabaseClient
       .from("config_rifa")
       .select("bloqueado")
-      .eq("id", 1)
+      .eq("organization_id", orgActual.id)
       .single();
 
     if (error) return;
@@ -731,7 +799,7 @@ async function toggleBloqueo() {
   const { error } = await supabaseClient
     .from("config_rifa")
     .update({ bloqueado: nuevoEstado })
-    .eq("id", 1);
+    .eq("organization_id", orgActual.id);
 
   if (error) {
     alert("No se pudo cambiar el estado: " + error.message);
@@ -750,68 +818,3 @@ async function toggleBloqueo() {
 if (btnBloquear) {
   btnBloquear.addEventListener("click", toggleBloqueo);
 }
-
-cargarEstadoBloqueo();
-
-
-async function cargarEstadoBloqueo() {
-  try {
-    const { data, error } = await supabaseClient
-      .from("config_rifa")
-      .select("bloqueado")
-      .eq("id", 1)
-      .single();
-
-    if (error) return;
-
-    actualizarBotonBloqueo(data.bloqueado);
-  } catch (err) {
-    console.error("Error al cargar estado de bloqueo:", err);
-  }
-}
-
-function actualizarBotonBloqueo(bloqueado) {
-  if (!btnBloquear) return;
-
-  if (bloqueado) {
-    btnBloquear.textContent = "🔓 Desbloquear números";
-    btnBloquear.className   = "btn-desbloquear";
-  } else {
-    btnBloquear.textContent = "🔒 Bloquear números";
-    btnBloquear.className   = "btn-bloquear";
-  }
-
-  btnBloquear.dataset.bloqueado = bloqueado ? "1" : "0";
-}
-
-async function toggleBloqueo() {
-  const estaBloqueado = btnBloquear.dataset.bloqueado === "1";
-  const nuevoEstado   = !estaBloqueado;
-
-  btnBloquear.disabled = true;
-
-  const { error } = await supabaseClient
-    .from("config_rifa")
-    .update({ bloqueado: nuevoEstado })
-    .eq("id", 1);
-
-  if (error) {
-    alert("No se pudo cambiar el estado: " + error.message);
-    btnBloquear.disabled = false;
-    return;
-  }
-
-  actualizarBotonBloqueo(nuevoEstado);
-  btnBloquear.disabled = false;
-
-  alert(nuevoEstado
-    ? "🔒 Grilla bloqueada. Los usuarios no pueden seleccionar números."
-    : "🔓 Grilla desbloqueada. Los usuarios pueden seleccionar números."
-  );
-}
-
-if (btnBloquear) {
-  btnBloquear.addEventListener("click", toggleBloqueo);
-}
-
-cargarEstadoBloqueo();
