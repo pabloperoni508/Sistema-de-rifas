@@ -394,9 +394,11 @@ window.cancelarNumero = cancelarNumero;
 // una vez que orgActual ya está disponible)
 // =========================
 async function iniciarAdmin() {
+  document.title = "Admin - " + orgActual.name;
   await cargarConfig();
   await cargarTablaAdmin();
   await cargarImagenActual();
+  await cargarFaviconActual();
   await cargarEstadoBloqueo();
 }
 
@@ -696,6 +698,174 @@ if (btnSubirImagen) {
 
 if (btnQuitarImagen) {
   btnQuitarImagen.addEventListener("click", quitarImagen);
+}
+
+// =========================
+// FAVICON
+// =========================
+const inputFavicon       = document.getElementById("inputFavicon");
+const btnSeleccionarFav  = document.getElementById("btnSeleccionarFavicon");
+const btnSubirFavicon    = document.getElementById("btnSubirFavicon");
+const btnQuitarFavicon   = document.getElementById("btnQuitarFavicon");
+const previewFavicon     = document.getElementById("previewFaviconActual");
+const imgPreviewFavicon  = document.getElementById("imgPreviewFavicon");
+const faviconPlaceholder = document.getElementById("faviconUploadPlaceholder");
+const faviconStatus      = document.getElementById("faviconStatus");
+
+let faviconSeleccionado = null;
+
+function mostrarFaviconStatus(mensaje, tipo = "info") {
+  faviconStatus.textContent = mensaje;
+  faviconStatus.className   = `upload-status visible status-${tipo}`;
+}
+
+async function cargarFaviconActual() {
+  try {
+    const { data, error } = await supabaseClient
+      .from("config_rifa")
+      .select("favicon_url")
+      .eq("organization_id", orgActual.id)
+      .single();
+
+    if (error || !data?.favicon_url) return;
+
+    imgPreviewFavicon.src          = data.favicon_url;
+    previewFavicon.style.display   = "flex";
+    btnQuitarFavicon.style.display = "inline-block";
+  } catch (err) {
+    console.error("Error al cargar favicon actual:", err);
+  }
+}
+
+async function subirFavicon() {
+  if (!faviconSeleccionado) return;
+
+  btnSubirFavicon.disabled    = true;
+  btnSubirFavicon.textContent = "Subiendo...";
+  mostrarFaviconStatus("Subiendo favicon...", "info");
+
+  try {
+    const ext         = faviconSeleccionado.name.split(".").pop().toLowerCase() || "ico";
+    const storagePath = orgActual.id + "/favicon." + ext;
+
+    const { error: uploadError } = await supabaseClient.storage
+      .from(STORAGE_BUCKET)
+      .upload(storagePath, faviconSeleccionado, {
+        upsert: true,
+        contentType: faviconSeleccionado.type || "image/x-icon"
+      });
+
+    if (uploadError) {
+      mostrarFaviconStatus("Error al subir: " + uploadError.message, "error");
+      btnSubirFavicon.disabled    = false;
+      btnSubirFavicon.textContent = "⬆ Subir favicon";
+      return;
+    }
+
+    const { data: urlData } = supabaseClient.storage
+      .from(STORAGE_BUCKET)
+      .getPublicUrl(storagePath);
+
+    const { error: dbError } = await supabaseClient
+      .from("config_rifa")
+      .upsert(
+        { organization_id: orgActual.id, favicon_url: urlData.publicUrl, favicon_path: storagePath },
+        { onConflict: "organization_id" }
+      );
+
+    if (dbError) {
+      mostrarFaviconStatus("Favicon subido pero no se pudo guardar: " + dbError.message, "error");
+      return;
+    }
+
+    mostrarFaviconStatus("✓ Favicon guardado correctamente.", "ok");
+    btnSubirFavicon.textContent    = "⬆ Subir favicon";
+    btnQuitarFavicon.style.display = "inline-block";
+    faviconSeleccionado            = null;
+    btnSubirFavicon.disabled       = true;
+
+  } catch (err) {
+    console.error("Error inesperado al subir favicon:", err);
+    mostrarFaviconStatus("Error inesperado: " + err.message, "error");
+    btnSubirFavicon.disabled    = false;
+    btnSubirFavicon.textContent = "⬆ Subir favicon";
+  }
+}
+
+async function quitarFavicon() {
+  const confirmar = window.confirm("¿Seguro que querés quitar el favicon?");
+  if (!confirmar) return;
+
+  mostrarFaviconStatus("Quitando favicon...", "info");
+
+  try {
+    const { data: fila } = await supabaseClient
+      .from("config_rifa")
+      .select("favicon_path")
+      .eq("organization_id", orgActual.id)
+      .single();
+
+    if (fila?.favicon_path) {
+      await supabaseClient.storage.from(STORAGE_BUCKET).remove([fila.favicon_path]);
+    }
+
+    const { error } = await supabaseClient
+      .from("config_rifa")
+      .update({ favicon_url: null, favicon_path: null })
+      .eq("organization_id", orgActual.id);
+
+    if (error) {
+      mostrarFaviconStatus("Error al quitar el favicon: " + error.message, "error");
+      return;
+    }
+
+    imgPreviewFavicon.src             = "";
+    previewFavicon.style.display      = "none";
+    faviconPlaceholder.style.display  = "flex";
+    btnQuitarFavicon.style.display    = "none";
+    faviconSeleccionado = null;
+    btnSubirFavicon.disabled = true;
+    mostrarFaviconStatus("Favicon quitado correctamente.", "ok");
+
+  } catch (err) {
+    console.error("Error al quitar favicon:", err);
+    mostrarFaviconStatus("Ocurrió un error inesperado.", "error");
+  }
+}
+
+if (btnSeleccionarFav) {
+  btnSeleccionarFav.addEventListener("click", () => inputFavicon.click());
+}
+
+if (inputFavicon) {
+  inputFavicon.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.size > 1 * 1024 * 1024) {
+      mostrarFaviconStatus("El favicon no puede superar 1 MB.", "error");
+      return;
+    }
+
+    faviconSeleccionado = file;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      imgPreviewFavicon.src            = ev.target.result;
+      previewFavicon.style.display     = "flex";
+      faviconPlaceholder.style.display = "none";
+    };
+    reader.readAsDataURL(file);
+
+    btnSubirFavicon.disabled = false;
+  });
+}
+
+if (btnSubirFavicon) {
+  btnSubirFavicon.addEventListener("click", subirFavicon);
+}
+
+if (btnQuitarFavicon) {
+  btnQuitarFavicon.addEventListener("click", quitarFavicon);
 }
 
 // =========================

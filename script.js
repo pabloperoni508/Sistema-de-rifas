@@ -35,6 +35,7 @@ async function obtenerConfigPublica() {
     }
 
     configActual = data;
+    aplicarFavicon(data);
     return data;
 
   } catch (err) {
@@ -49,6 +50,13 @@ async function obtenerConfigPublica() {
 async function cargarBloqueo() {
   const config = await obtenerConfigPublica();
   return config?.bloqueado === true;
+}
+
+function aplicarFavicon(config) {
+  const link = document.getElementById("faviconLink");
+  if (link && config?.favicon_url) {
+    link.href = config.favicon_url;
+  }
 }
 
 // =============================

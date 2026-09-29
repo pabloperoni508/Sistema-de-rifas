@@ -135,6 +135,33 @@
 
           <div id="uploadStatus" class="upload-status" style="display:none;"></div>
         </section>
+        
+        <!-- FAVICON -->
+<section class="admin-section">
+  <h2>Favicon</h2>
+  <p class="admin-hint">El ícono que se ve en la pestaña del navegador para esta rifa. Formatos aceptados: .ico, .png, .svg.</p>
+
+  <div class="upload-area" id="faviconUploadArea">
+    <div id="previewFaviconActual" class="preview-actual" style="display:none;">
+      <img id="imgPreviewFavicon" src="" alt="Favicon actual" style="max-width:48px; max-height:48px;">
+      <span class="preview-label">Favicon actual</span>
+    </div>
+    <div class="upload-placeholder" id="faviconUploadPlaceholder">
+      <span class="upload-icon">🔖</span>
+      <span>Hacé click para seleccionar el favicon</span>
+      <span class="upload-hint">.ico, .png o .svg</span>
+    </div>
+    <input type="file" id="inputFavicon" accept=".ico,.png,.svg,image/*" style="display:none;">
+  </div>
+
+  <div class="upload-acciones">
+    <button id="btnSeleccionarFavicon" class="btn-secondary">Seleccionar favicon</button>
+    <button id="btnSubirFavicon" class="btn-descargar" disabled>⬆ Subir favicon</button>
+    <button id="btnQuitarFavicon" class="btn-cancelar" style="display:none;">✕ Quitar favicon</button>
+  </div>
+
+  <div id="faviconStatus" class="upload-status" style="display:none;"></div>
+</section>
 
         <!-- BOTONES DE ACCIÓN -->
         <section class="admin-section">
